@@ -1,176 +1,166 @@
-import streamlit as st
-import yfinance as yf
+import warnings
+from datetime import datetime, timedelta
+
 import numpy as np
 import pandas as pd
-from datetime import datetime, timedelta
 import plotly.graph_objects as go
-import scipy.stats as stats
-import warnings
-warnings.filterwarnings('ignore')
+import streamlit as st
+import yfinance as yf
+import plotly.express as px
 
-LOT_SIZE = 100  # one option contract = 100 shares
+warnings.filterwarnings("ignore")
 
-def black_scholes(S, K, T, r, sigma, option_type='call'):
-    d1 = (np.log(S/K) + (r + sigma**2/2)*T) / (sigma*np.sqrt(T))
-    d2 = d1 - sigma*np.sqrt(T)
-    if option_type == 'call':
-        return S * stats.norm.cdf(d1) - K * np.exp(-r*T) * stats.norm.cdf(d2)
+LOT_SIZE = 100
+
+
+def plot_series(data, title, chart_type, current_price=None):
+    if chart_type == "Candlestick":
+        fig = go.Figure(data=[go.Candlestick(
+            x=data.index,
+            open=data['Open'],
+            high=data['High'],
+            low=data['Low'],
+            close=data['Close']
+        )])
     else:
-        return K * np.exp(-r*T) * stats.norm.cdf(-d2) - S * stats.norm.cdf(-d1)
-
-def calculate_greeks_vec(S, K, T, r, sigma, option_type_arr):
-    d1 = (np.log(S/K) + (r + sigma**2/2)*T) / (sigma*np.sqrt(T))
-    d2 = d1 - sigma*np.sqrt(T)
-    delta = np.where(option_type_arr=='call',
-                     stats.norm.cdf(d1),
-                     stats.norm.cdf(d1)-1)
-    gamma = stats.norm.pdf(d1) / (S * sigma * np.sqrt(T))
-    theta = ((-S*stats.norm.pdf(d1)*sigma/(2*np.sqrt(T))
-              - np.where(option_type_arr=='call',
-                         r*K*np.exp(-r*T)*stats.norm.cdf(d2),
-                         -r*K*np.exp(-r*T)*stats.norm.cdf(-d2)))
-             ) / 365
-    vega = S * stats.norm.pdf(d1) * np.sqrt(T) / 100
-    return delta, gamma, theta, vega
+        fig = px.line(
+            data.reset_index(),
+            x='Date',
+            y='Close',
+            title=title,
+            markers=True,
+            hover_data={'Open':':.2f','High':':.2f','Low':':.2f','Close':':.2f'}
+        )
+    if current_price is not None:
+        fig.add_hline(
+            y=current_price,
+            line_dash="dash",
+            line_color="gray",   
+            annotation_text=f"Current: ${current_price:.2f}",
+            annotation_position="top right"
+        )
+    fig.update_layout(
+        title=title,
+        hovermode='x unified',
+        margin=dict(l=40, r=40, t=60, b=40)
+    )
+    return fig
 
 def get_stock_data(ticker):
+    # fetch last price for display + overlay
     hist = yf.Ticker(ticker).history(period="1y")
     if hist.empty:
-        return None, None, None
-    S = hist['Close'].iloc[-1]
-    vol = hist['Close'].pct_change().dropna().std() * np.sqrt(252)
-    return S, vol, hist
+        st.error("No data for ticker.")
+        return None
+    price = hist["Close"].iloc[-1]
+    st.metric(label="Current Price", value=f"{price:.2f}")
 
-def main():
-    st.set_page_config(page_title="Option Chain Sell Analysis", layout="wide")
-    st.title("📝 Sell-Only Option Chain Analysis")
+    # sidebar controls
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        hist_period = st.selectbox("Historical period", ["1mo","3mo","6mo","1y","5y","max"], index=1)
+    with c2:
+        hist_interval = st.selectbox("Historical interval", ["1d","1wk","1mo"], index=0)
+    with c3:
+        hist_type = st.selectbox("Chart type", ["Line","Candlestick"], index=0, key="historical")
 
-    # Sidebar inputs
-    st.sidebar.header("Parameters")
-    ticker = st.sidebar.text_input("Ticker", "AAPL").upper()
-    today = datetime.now().date()
-    st.sidebar.write(f"Date: {today}")
-
-    S, vol, hist = get_stock_data(ticker)
-    if S is None:
-        st.sidebar.error("No data for ticker.")
-        return
-
-    st.sidebar.success(f"Spot Price: ${S:.2f}")
-    st.sidebar.info(f"Volatility: {vol*100:.1f}%")
-
-    # Sell side selector
-    side = st.sidebar.selectbox("Position", ["Sell Call", "Sell Put"])
-    opt_type = side.split()[1].lower()  # 'call' or 'put'
-
-    # Expiry picker
-    expiries = yf.Ticker(ticker).options
-    future = [d for d in expiries if datetime.strptime(d, '%Y-%m-%d').date() > today]
-    expiry = st.sidebar.selectbox("Expiry", future or [(today + timedelta(days=30)).isoformat()])
-    T = (datetime.strptime(expiry, '%Y-%m-%d').date() - today).days / 365.0
-
-    # Cash and model parameters
-    cash = st.sidebar.number_input("Cash Available ($)", 0, 10_000_000, 10_000, 100)
-    r_pct       = st.sidebar.slider("Risk‑Free Rate (%)", 0.0, 10.0, 5.0, 0.1)
-    vol_adj_pct = st.sidebar.slider("Vol Adjustment (%)", -50, 50, 0, 1)
-    r       = r_pct / 100
-    adj_vol = vol * (1 + vol_adj_pct / 100)
-
-    # Fetch option chain
-    chain = yf.Ticker(ticker).option_chain(expiry)
-    df = chain.calls if opt_type=='call' else chain.puts
-
-    # Market premium: midpoint(bid,ask) or fallback to lastPrice
-    df['market_premium'] = np.where(
-        (df.bid > 0) & (df.ask > 0),
-        (df.bid + df.ask) / 2,
-        df.lastPrice
-    )
-
-    # Theoretical price and diff%
-    df['theo']     = black_scholes(S, df.strike, T, r, adj_vol, opt_type)
-    df['diff_pct'] = (df.theo - df.market_premium) / df.market_premium * 100
-
-    # Vectorized greeks
-    delta, gamma, theta, vega = calculate_greeks_vec(
-        S,
-        df.strike.values,
-        T,
-        r,
-        adj_vol,
-        np.array([opt_type] * len(df))
-    )
-    df['delta'], df['gamma'], df['theta'], df['vega'] = delta, gamma, theta, vega
-
-
-    # Select the 10 strikes closest to spot, reset their index for styling
-    df['dist'] = (df.strike - S).abs()
-    count = st.sidebar.slider("Number of strikes to show", 5, 50, 10, 1)
-
-    # then build subset with that:
-    subset = (
-        df.nsmallest(count, 'dist')
-        .sort_values('strike')
-        .reset_index(drop=True)
-    )
-    atm_pos = subset['dist'].idxmin()  # 0–9 position of ATM
-
-    # Max contracts based on spot * 100
-    max_contracts = int(cash / (S * LOT_SIZE))
-    st.sidebar.markdown(f"**Max Contracts (spot basis):** {max_contracts}")
-
-    # Display the 10-strike table with ATM row highlighted
-    st.subheader(f"{side} Chain @ {expiry}")
-    display = subset[['strike','market_premium','theo','diff_pct','delta','gamma','theta','vega']].copy()
-    display = display.rename(columns={
-        'strike':'Strike',
-        'market_premium':'Market Premium',
-        'theo':'Theoretical',
-        'diff_pct':'Diff (%)',
-        'delta':'Δ',
-        'gamma':'Γ',
-        'theta':'Θ',
-        'vega':'ν',
-    })
-    styled = (
-        display.style
-               .format({
-                   'Market Premium':'${:,.2f}',
-                   'Theoretical':'${:,.2f}',
-                   'Diff (%)':'{:+.1f}%',
-                   'Δ':'{:.3f}',
-                   'Γ':'{:.3f}',
-                   'Θ':'{:.3f}',
-                   'ν':'{:.3f}'
-               })
-               .apply(
-                   lambda row: [
-                       'background-color: lightblue' if row.name == atm_pos else ''
-                       for _ in row
-                   ],
-                   axis=1
-               )
-    )
-    st.dataframe(styled)
-
-    # Optional: drill into a single strike
-    pick = st.selectbox("Inspect Strike", subset.strike.tolist())
-    if pick is not None:
-        prices = np.linspace(S*0.8, S*1.2, 50)
-        opts   = [
-            black_scholes(p, pick, T, r, adj_vol, opt_type)
-            for p in prices
-        ]
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=prices, y=opts, mode='lines', name='Theoretical'))
-        fig.add_vline(x=S, line_dash='dash', annotation_text='Spot')
-        fig.add_vline(x=pick, line_dash='dash', annotation_text='Strike')
-        fig.update_layout(
-            title=f"{opt_type.title()} @ {pick}",
-            xaxis_title='Stock Price',
-            yaxis_title='Option Price'
+    # fetch and plot
+    data = yf.Ticker(ticker).history(period=hist_period, interval=hist_interval)
+    if data.empty:
+        st.error(f"No historical data for {ticker}")
+    else:
+        data.index.name = 'Date'
+        fig = plot_series(
+            data,
+            f"{ticker} Historical ({hist_period}, {hist_interval})",
+            hist_type,
+            current_price=price 
         )
         st.plotly_chart(fig, use_container_width=True)
+
+    return price
+
+def get_earnings(ticker):
+    T = yf.Ticker(ticker)
+    cal = T.calendar
+    next_er = None
+    if hasattr(cal, "index") and "Earnings Date" in cal.index:
+        next_er = pd.to_datetime(cal.loc["Earnings Date"].values[0]).date()
+    elif isinstance(cal, dict) and cal.get("Earnings Date"):
+        raw = cal["Earnings Date"][0] if isinstance(cal["Earnings Date"], (list, tuple, np.ndarray)) else cal["Earnings Date"]
+        next_er = pd.to_datetime(raw).date()
+    if next_er:
+        days_to_er = (next_er - datetime.now().date()).days
+        st.info(f"Next earnings: **{next_er}** (in {days_to_er} days)")
+    else:
+        st.info("No upcoming earnings date available.")
+    today = datetime.now().date()
+    expiries = T.options
+    future = [d for d in expiries if datetime.strptime(d, "%Y-%m-%d").date() > today]
+    choices = []
+    for d in future:
+        d_date = datetime.strptime(d, "%Y-%m-%d").date()
+        days = (d_date - today).days
+        label = f"{d} ({days}D)"
+        if next_er and d_date <= next_er < d_date + timedelta(days=7):
+            label += " Earnings Week"
+        choices.append((d, label))
+    default = (today + timedelta(days=30)).isoformat()
+    expiry = st.selectbox("Expiry", [c[0] for c in choices] or [default], format_func=lambda d: dict(choices).get(d, d))
+    return expiry
+
+def formulate_df(ticker, current_price, expiry):
+    chain = yf.Ticker(ticker).option_chain(expiry)
+    calls, puts = chain.calls.copy(), chain.puts.copy()
+    for df in (calls, puts):
+        df["market_premium"] = np.where((df.bid > 0) & (df.ask > 0), (df.bid + df.ask) / 2, df.lastPrice)
+    merged = pd.merge_asof(
+        calls.sort_values("strike"),
+        puts.sort_values("strike"),
+        on="strike",
+        suffixes=("_call", "_put"),
+        direction="nearest"
+    )
+    merged["dist"] = (merged.strike - current_price).abs()
+    return merged.nsmallest(30, "dist").sort_values("strike").reset_index(drop=True)
+
+def get_max_lot(current_price):
+    cash = st.number_input("Cash Available (USD)", 0, 10_000_000, 40_000, 100)
+    max_contracts = int(cash / (current_price * LOT_SIZE))
+    st.markdown(f"**Max Contracts:** {max_contracts}")
+
+def display(subset, current_price, expiry):
+    subset["Breakeven Call"] = subset.strike + subset.market_premium_call
+    subset["Breakeven Put"] = subset.strike - subset.market_premium_put
+    display_df = subset[[
+        "Breakeven Call", "market_premium_call", "strike", "market_premium_put", "Breakeven Put"
+    ]].rename(columns={
+        "market_premium_call": "SELL Call Premium",
+        "strike":              "Strike",
+        "market_premium_put":  "SELL Put Premium"
+    })
+    for col in ["SELL Call Premium", "SELL Put Premium", "Breakeven Call", "Breakeven Put"]:
+        display_df[col] = display_df[col].map("${:,.2f}".format)
+    atm_idx = (subset.strike - current_price).abs().idxmin()
+    styled = display_df.style.apply(
+        lambda row: ["background-color: lightblue" if row.name == atm_idx else "" for _ in row],
+        axis=1
+    )
+    height = display_df.shape[0] * 35 + 40
+    st.subheader(f"Option Premium @ {expiry}")
+    st.dataframe(styled, height=height, use_container_width=True)
+
+def main():
+    st.set_page_config(page_title="Option Analysis", layout="wide")
+    st.title("📝 Sell-Only Option Analysis")
+    ticker = st.text_input("Ticker", "PLTR").upper()
+    price = get_stock_data(ticker)
+    if price is None:
+        return
+    expiry = get_earnings(ticker)
+    subset = formulate_df(ticker, price, expiry)
+    get_max_lot(price)
+    display(subset, price, expiry)
 
 if __name__ == "__main__":
     main()
