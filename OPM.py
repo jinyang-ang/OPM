@@ -139,7 +139,7 @@ def display(subset, current_price, expiry):
         "strike":              "Strike",
         "market_premium_put":  "SELL Put Premium"
     })
-    for col in ["SELL Call Premium", "SELL Put Premium", "Breakeven Call", "Breakeven Put"]:
+    for col in ["SELL Call Premium", "SELL Put Premium", "Breakeven Call", "Breakeven Put", "Strike"]:
         display_df[col] = display_df[col].map("${:,.2f}".format)
     atm_idx = (subset.strike - current_price).abs().idxmin()
     styled = display_df.style.apply(
