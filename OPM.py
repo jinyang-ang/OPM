@@ -68,6 +68,115 @@ def get_valuation_metrics(T):
     cols[2].metric("EV/EBITDA", f"{ev_ebitda:.1f}" if ev_ebitda else "N/A")
     cols[3].metric("EV/FCF", f"{ev_fcf:.1f}" if ev_fcf else "N/A")
 
+def show_fundamental_analysis(T):
+    qf = T.quarterly_financials
+    qb = T.quarterly_balance_sheet
+
+    if qf.empty or qb.empty:
+        st.warning("Quarterly data not available for chart.")
+        return
+
+    periods = qf.columns[:4][::-1]  
+
+    metrics = {
+        "Revenue": [],
+        "Gross Profit": [],
+        "Operating Income": [],
+        "Net Income": [],
+        "Total Assets": [],
+        "Total Liabilities": [],
+        "Total Equity": [],
+        "Total Cash": [],
+        "Total Debt": [],
+        "Gross Margin": [],
+        "Net Margin": [],
+        "ROA": [],
+        "ROE": []
+    }
+
+    for period in periods:
+        rev = qf.get(period).get("Total Revenue")
+        gp = qf.get(period).get("Gross Profit")
+        op = qf.get(period).get("Operating Income")
+        ni = qf.get(period).get("Net Income")
+        ta = qb.get(period).get("Total Assets")
+        tl = qb.get(period).get("Total Liabilities Net Minority Interest")
+        te = qb.get(period).get("Stockholders Equity")
+        cash = qb.get(period).get("Cash And Cash Equivalents") or 0
+        ltd = qb.get(period).get("Long Term Debt") or 0
+        std = qb.get(period).get("Current Debt") or 0
+        debt = ltd + std
+
+        metrics["Revenue"].append(rev or 0)
+        metrics["Gross Profit"].append(gp or 0)
+        metrics["Operating Income"].append(op or 0)
+        metrics["Net Income"].append(ni or 0)
+        metrics["Total Assets"].append(ta or 0)
+        metrics["Total Liabilities"].append(tl or 0)
+        metrics["Total Equity"].append(te or 0)
+        metrics["Total Cash"].append(cash or 0)
+        metrics["Total Debt"].append(debt)
+
+        metrics["Gross Margin"].append(gp / rev * 100 if gp and rev else None)
+        metrics["Net Margin"].append(ni / rev * 100 if ni and rev else None)
+        metrics["ROA"].append(ni / ta * 100 if ni and ta else None)
+        metrics["ROE"].append(ni / te * 100 if ni and te else None)
+    
+    chart_type = st.selectbox("Chart Type", ["Bar", "Line", "Area"], index=0)
+    def plot_metric_group(title, metric_keys, scale=1e9, suffix="B", percent=False):
+        fig = go.Figure()
+        for key in metric_keys:
+            values = [v / scale if v is not None else None for v in metrics[key]]
+            labels = [f"{v:.2f}%" if percent and v is not None else f"{v:.2f}{suffix}" if v is not None else "" for v in values]
+
+            if chart_type == "Bar":
+                fig.add_trace(go.Bar(
+                    name=key,
+                    x=periods.strftime('%Y-%m'),
+                    y=values,
+                    text=labels,
+                    textposition="auto",
+                    texttemplate="%{text}",
+                    hovertemplate="%{x}<br>%{text}<extra></extra>"
+                ))
+            elif chart_type == "Line":
+                fig.add_trace(go.Scatter(
+                    name=key,
+                    x=periods.strftime('%Y-%m'),
+                    y=values,
+                    text=labels,
+                    mode="lines+markers+text",
+                    textposition="top center",
+                    texttemplate="%{text}",
+                    hovertemplate="%{x}<br>%{text}<extra></extra>"
+                ))
+            elif chart_type == "Area":
+                fig.add_trace(go.Scatter(
+                    name=key,
+                    x=periods.strftime('%Y-%m'),
+                    y=values,
+                    text=labels,
+                    mode="lines+markers+text",
+                    fill='tozeroy',
+                    textposition="top center",
+                    texttemplate="%{text}",
+                    hovertemplate="%{x}<br>%{text}<extra></extra>"
+                ))
+
+        fig.update_layout(
+            title=title,
+            barmode='group' if chart_type == "Bar" else None,
+            xaxis_title="Quarter",
+            yaxis_title="%" if percent else f"USD ({suffix})",
+            height=420,
+            margin=dict(t=60, b=40),
+            template="seaborn"
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    plot_metric_group("Income Statement", ["Revenue", "Gross Profit", "Operating Income", "Net Income"])
+    plot_metric_group("Balance Sheet", ["Total Assets", "Total Liabilities", "Total Equity", "Total Cash", "Total Debt"])
+    plot_metric_group("Profitability (%)", ["Gross Margin", "Net Margin", "ROA", "ROE"], scale=1, suffix="%", percent=True)
 
 def get_stock_data(T):
 
@@ -83,8 +192,13 @@ def get_stock_data(T):
     )
 
     earnings = get_earnings(T)
-    get_valuation_metrics(T)
 
+    fundementals = st.checkbox("Show Fundemental Analysis", False)
+    if fundementals:
+        get_valuation_metrics(T)
+        show_fundamental_analysis(T)
+
+    st.subheader("Historical Price & Volume")
     c1, c2, c3 = st.columns(3)
     with c1:
         hist_period = st.selectbox("Historical period", ["1mo","3mo","6mo","1y","5y","max"], index=1)
@@ -278,6 +392,17 @@ def display(subset, current_price, expiry):
     display_df["Strike"]          = display_df["Strike"].map("${:,.2f}".format)
     display_df["Breakeven Call"]  = display_df["Breakeven Call"].map("${:,.2f}".format)
     display_df["Breakeven Put"]   = display_df["Breakeven Put"].map("${:,.2f}".format)
+
+    view_choice = st.radio("View Options:", ["All", "Calls Only", "Puts Only"], horizontal=True)
+
+    if view_choice == "Calls Only":
+        display_df = display_df[[
+            "Call Bid", "Call Ask", "Call Volume", "Call Premium", "Breakeven Call", "Strike"
+        ]]
+    elif view_choice == "Puts Only":
+        display_df = display_df[[
+            "Strike", "Breakeven Put", "Put Premium", "Put Volume", "Put Bid", "Put Ask"
+        ]]
 
     atm_idx = (subset.strike - current_price).abs().idxmin()
     styled = (
