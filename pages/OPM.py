@@ -351,7 +351,7 @@ def formulate_df(T, current_price, expiry):
         direction="nearest"
     )
     merged["dist"] = (merged.strike - current_price).abs()
-    return merged.nsmallest(30, "dist").sort_values("strike").reset_index(drop=True)
+    return merged.nsmallest(40, "dist").sort_values("strike").reset_index(drop=True)
 
 
 def display(subset, current_price, expiry):
@@ -397,11 +397,11 @@ def display(subset, current_price, expiry):
 
     if view_choice == "Calls Only":
         display_df = display_df[[
-            "Call Bid", "Call Ask", "Call Volume", "Call Premium", "Breakeven Call", "Strike"
+            "Strike", "Call Premium", "Breakeven Call", "Call Volume", "Call Bid", "Call Ask"
         ]]
     elif view_choice == "Puts Only":
         display_df = display_df[[
-            "Strike", "Breakeven Put", "Put Premium", "Put Volume", "Put Bid", "Put Ask"
+            "Strike", "Put Premium", "Breakeven Put", "Put Volume", "Put Bid", "Put Ask"
         ]]
 
     atm_idx = (subset.strike - current_price).abs().idxmin()
@@ -422,8 +422,43 @@ def display(subset, current_price, expiry):
     height = display_df.shape[0] * 35 + 40
     st.dataframe(styled, height=height, use_container_width=True)
 
+def add_sidebar_explanation():
+    st.sidebar.title("📘 Metrics Glossary")
+
+    valuation_metric = st.sidebar.checkbox("### Valuation Metrics")
+    if valuation_metric:
+        st.sidebar.markdown("""
+        - **P/E (Price-to-Earnings)**: Share price relative to earnings per share. Higher = pricier stock.  
+        - **PEG (Price/Earnings-to-Growth)**: P/E adjusted for growth. PEG < 1 can suggest undervaluation.  
+        - **EV/EBITDA (Enterprise Value / EBITDA)**:  
+        - **EV (Enterprise Value)** = Market Cap + Debt – Cash. Represents the cost to acquire the entire company (equity + debt).  
+        - **EBITDA** = Earnings before Interest, Taxes, Depreciation & Amortization. It’s a proxy for operating cash flow. 
+        - **EV/FCF (Enterprise Value / Free Cash Flow)**: Compares firm value to its cash flow after expenses.  
+        """
+        )
+
+    fundemental_metric = st.sidebar.checkbox("### Fundamental Metrics")
+    if fundemental_metric:
+        st.sidebar.markdown("""
+        - **Revenue**: Total money earned from sales before expenses.  
+        - **Gross Profit**: Revenue minus cost of goods sold (COGS). Shows core profitability.  
+        - **Operating Income**: Profit after operating expenses, excluding interest & taxes.  
+        - **Net Income**: Final profit after all expenses, interest, and taxes.  
+        - **Total Assets**: Everything the company owns (cash, property, inventory, etc.).  
+        - **Total Liabilities**: Debts and obligations owed (loans, payables, etc.).  
+        - **Total Equity**: Assets minus liabilities — the value left for shareholders.  
+        - **Total Cash**: Available liquid money (cash & equivalents).  
+        - **Total Debt**: Combined short-term and long-term borrowings.  
+        - **Gross Margin**: % of revenue left after COGS. Higher = better efficiency.  
+        - **Net Margin**: % of revenue that becomes net profit. Shows bottom-line strength.  
+        - **ROA (Return on Assets)**: Net income ÷ total assets. Measures how effectively assets generate profit.  
+        - **ROE (Return on Equity)**: Net income ÷ shareholder equity. Shows returns to shareholders.
+        """
+        )
+
 def main():
     st.set_page_config(page_title="Option Analysis", layout="wide")
+    add_sidebar_explanation()
     st.title("📝 Sell-Only Option Analysis")
     ticker = st.text_input("Ticker", "PLTR").upper()
     T = yf.Ticker(ticker)
