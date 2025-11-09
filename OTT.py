@@ -771,15 +771,24 @@ def main_dashboard():
             flow_data = []
 
             # Trades
+            total_commission = 0
             for t in filtered_trades:
                 value = float(t['premium']) * int(t['contracts']) * 100
                 commission = float(t.get('commission', 0))
+                total_commission += commission  # accumulate total commission
+
+                # remove commission from net trade flow to avoid double counting
                 if t['action'] == "BUY":
-                    net = -(value + commission)
+                    net = -value
                 else:  # SELL
-                    net = (value - commission)
+                    net = value
                 label = f"{t['action']} {t['option_type']}"
                 flow_data.append({"category": label, "amount": net})
+
+            # Add commission as a separate expense category
+            if total_commission > 0:
+                flow_data.append({"category": "COMMISSION", "amount": -total_commission})
+
 
             # Transactions
             for tr in filtered_transactions:
